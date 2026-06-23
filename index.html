@@ -1087,6 +1087,7 @@ select.form-input{cursor:pointer;appearance:none;-webkit-appearance:none}
       <div class="form-group">
         <div class="form-label">내용</div>
         <textarea class="form-input" id="w-body" placeholder="자유롭게 작성해보세요..."></textarea>
+        <button type="button" class="btn btn-ghost" style="width:100%;margin-top:8px" onclick="openWashFromWrite()">✨ AI 문체세탁</button>
       </div>
       <div id="check-area"></div>
       <div style="display:flex;gap:8px;margin-top:4px">
@@ -2369,11 +2370,21 @@ async function runWash(){
 function copyWash(){
   navigator.clipboard?.writeText($('wash-result-text').textContent).then(()=>{$('wash-copy-btn').textContent='복사됨 ✓';setTimeout(()=>$('wash-copy-btn').textContent='복사',1500);});
 }
+function openWashFromWrite(){
+  const text=$('w-body').value.trim();
+  if(!text){alert('먼저 글 내용을 작성해주세요.');return;}
+  $('wash-input').value=text;
+  $('wash-check-area').innerHTML='';
+  $('wash-result-wrap').style.display='none';
+  $('wash-btn-row').style.display='flex';
+  closeSheet('write-sheet');
+  openSheet('wash-sheet');
+}
 function useWashedText(){
   const text=$('wash-result-text').textContent;
   closeSheet('wash-sheet');
-  openWrite();
-  setTimeout(()=>{$('w-body').value=text;},300);
+  openSheet('write-sheet');
+  setTimeout(()=>{$('w-body').value=text;$('w-body').focus();},300);
 }
 
 // ── WEATHER SYSTEM ────────────────────────────────────────────
