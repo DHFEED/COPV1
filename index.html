@@ -952,6 +952,22 @@ select.form-input{cursor:pointer;appearance:none;-webkit-appearance:none}
       <div id="filter-log"><div class="empty"><div class="empty-icon">🛡</div>아직 검사 기록이 없어요</div></div>
     </div>
 
+    <div class="card" id="supabase-settings-card">
+      <div class="card-head"><span class="card-title">☁️ Supabase 공유 저장소</span></div>
+      <div style="padding:12px 14px">
+        <div class="form-group"><div class="form-label">Project URL</div><input class="form-input" id="sb-project-url" placeholder="https://xxxxx.supabase.co" autocomplete="off"/></div>
+        <div class="form-group"><div class="form-label">Publishable key 또는 anon key</div><input class="form-input" id="sb-anon-key" type="password" placeholder="sb_publishable_... 또는 eyJ..." autocomplete="new-password"/></div>
+        <div style="font-size:10.5px;color:var(--t3);line-height:1.55;margin:-2px 0 10px">service_role 키는 입력하지 마세요. 이 설정은 현재 브라우저에만 저장됩니다.</div>
+        <div id="sb-status" class="check-box check-loading" style="display:none;margin:0 0 10px"></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+          <button class="btn btn-primary" onclick="saveSupabaseConfig()">연결 설정 저장</button>
+          <button class="btn btn-ghost" onclick="testSupabaseConnection()">연결 테스트</button>
+          <button class="btn btn-ghost" onclick="loadSupabaseState()">공유 데이터 불러오기</button>
+          <button class="btn btn-primary" onclick="saveSupabaseState()">현재 데이터 저장</button>
+        </div>
+      </div>
+    </div>
+
     <div class="sec-header" style="padding-top:4px"><span class="sec-title">⚙️ AI 설정 (운영자)</span></div>
     <div class="prompt-card" id="prompt-card">
       <div class="prompt-row" onclick="openPromptSheet('chat')">
@@ -1343,6 +1359,7 @@ select.form-input{cursor:pointer;appearance:none;-webkit-appearance:none}
       <div class="form-group"><div class="form-label">내용</div><textarea class="form-input" id="cw-desc" placeholder="장소, 시간, 인원 등 자유롭게"></textarea></div>
       <div class="form-group" id="cw-time-wrap"><div class="form-label">시간·장소</div><input class="form-input" id="cw-time" placeholder="예: 오늘 18:30 / 회사 앞 호프집"/></div>
       <div class="form-group" id="cw-maxwrap"><div class="form-label">모집 인원</div><input class="form-input" id="cw-max" type="number" placeholder="예: 6" min="2"/></div>
+      <div id="club-filter-message"></div>
       <div style="display:flex;gap:8px;margin-top:4px">
         <button class="btn btn-ghost" style="flex:.4" onclick="closeSheet('club-write-sheet')">취소</button>
         <button class="btn btn-primary" style="flex:1" onclick="submitClub()">만들기</button>
@@ -1982,21 +1999,19 @@ function removeEvent(id){S.events=S.events.filter(e=>e.id!==id);renderCal();rend
 function quickAsk(msg){goPage('ai');setTimeout(()=>{$('chat-in').value=msg;sendChat()},100)}
 async function sendChat(){
   const input=$('chat-in');const msg=input.value.trim();if(!msg)return;
-  input.value='';input.disabled=true;appendMsg('user',msg);S.chatHistory.push({role:'user',content:msg});
+  input.value='';appendMsg('user',msg);S.chatHistory.push({role:'user',content:msg});
   const tid='t'+Date.now();appendTyping(tid);
   try{
-    const res=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
-      system:PROMPTS.chat,
-      messages:S.chatHistory.slice(-20)
+    const res=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+      model:'claude-sonnet-4-20250514',max_tokens:600,
+      system: PROMPTS.chat,
+      messages:S.chatHistory
     })});
-    const data=await res.json().catch(()=>({}));removeTyping(tid);
-    if(!res.ok)throw new Error(data.error||'챗봇 서버 응답 오류');
-    const reply=String(data.reply||'').trim()||'답변을 가져오지 못했어요.';
+    const data=await res.json();removeTyping(tid);
+    const reply=data.content?.map(c=>c.text||'').join('')||'답변을 가져오지 못했어요.';
     appendMsg('ai',reply);S.chatHistory.push({role:'assistant',content:reply});
     if(S.chatHistory.length>20)S.chatHistory.splice(0,2);
-    saveState();
-  }catch(e){removeTyping(tid);appendMsg('ai',`연결 오류가 발생했어요. ${e.message||''}`.trim())}
-  finally{input.disabled=false;input.focus()}
+  }catch(e){removeTyping(tid);appendMsg('ai','연결 오류가 발생했어요.')}
 }
 function appendMsg(role,text){const area=$('chat-area');const d=document.createElement('div');d.className='msg '+role;d.innerHTML=role==='ai'?`<div class="ai-av">AI</div><div class="bubble">${esc(text)}</div>`:`<div class="bubble">${esc(text)}</div>`;area.appendChild(d);area.scrollTop=area.scrollHeight}
 function appendTyping(id){const area=$('chat-area');const d=document.createElement('div');d.className='msg ai';d.id=id;d.innerHTML=`<div class="ai-av">AI</div><div class="bubble"><div class="typing"><span></span><span></span><span></span></div></div>`;area.appendChild(d);area.scrollTop=area.scrollHeight}
@@ -2285,8 +2300,16 @@ function pickClubEmoji(el,emoji){curClubEmoji=emoji;document.querySelectorAll('#
 function submitClub(){
   const title=$('cw-title').value.trim();if(!title)return;
   const desc=$('cw-desc').value.trim();
+  const time=$('cw-time').value.trim();
+  const check=recordRuleFilter(`${curClubType==='club'?'소모임':'번개'}: ${title}`,`${desc}\n${time}`);
+  if(!check.pass){
+    $('club-filter-message').innerHTML=`<div class="check-box check-fail">차단됨: ${esc(check.reason)}</div>`;
+    showToast('🛡','번개·소모임 등록 차단',check.reason);
+    return;
+  }
+  $('club-filter-message').innerHTML='';
   if(curClubType==='lightning'){
-    const l={id:S.nextId++,emoji:curClubEmoji,title,desc,time:$('cw-time').value||'미정',maxMember:Number($('cw-max').value)||10,members:[],joined:false,author:'나'};
+    const l={id:S.nextId++,emoji:curClubEmoji,title,desc,time:time||'미정',maxMember:Number($('cw-max').value)||10,members:[],joined:false,author:'나'};
     S.lightnings.unshift(l);
     pushNotif({icon:'⚡', iconClass:'notif-ni-club', text:`새 번개 모임이 생겼어요 — <strong>${esc(title)}</strong>`, type:'club', targetId:l.id});
   }
@@ -2795,7 +2818,7 @@ renderVisitors();
   }
   function ensureChatSheet(){
     if(q('week2-club-chat-sheet')) return;
-    document.body.insertAdjacentHTML('beforeend', `<div class="sheet-overlay" id="week2-club-chat-sheet"><div class="sheet"><div class="sheet-handle"></div><div class="sheet-title" id="week2-chat-title">톡방</div><div class="sheet-body"><div id="week2-chat-members" style="font-size:11px;color:var(--t3);margin-bottom:8px"></div><div class="week2-room" id="week2-chat-body"></div><div style="display:flex;gap:8px;margin-top:10px"><input class="form-input" id="week2-chat-input" placeholder="참여자에게 메시지 보내기" onkeydown="if(event.key==='Enter')week2SendChat()"/><button class="btn btn-primary" style="width:auto;padding:0 14px" onclick="week2SendChat()">전송</button></div><button class="btn btn-ghost" style="width:100%;margin-top:8px" onclick="closeSheet('week2-club-chat-sheet')">닫기</button></div></div></div>`);
+    document.body.insertAdjacentHTML('beforeend', `<div class="sheet-overlay" id="week2-club-chat-sheet"><div class="sheet"><div class="sheet-handle"></div><div class="sheet-title" id="week2-chat-title">톡방</div><div class="sheet-body"><div id="week2-chat-members" style="font-size:11px;color:var(--t3);margin-bottom:8px"></div><div id="week2-chat-filter-message"></div><div class="week2-room" id="week2-chat-body"></div><div style="display:flex;gap:8px;margin-top:10px"><input class="form-input" id="week2-chat-input" placeholder="참여자에게 메시지 보내기" onkeydown="if(event.key==='Enter')week2SendChat()"/><button class="btn btn-primary" style="width:auto;padding:0 14px" onclick="week2SendChat()">전송</button></div><button class="btn btn-ghost" style="width:100%;margin-top:8px" onclick="closeSheet('week2-club-chat-sheet')">닫기</button></div></div></div>`);
   }
   window.week2FillPollMeetOptions=function(){ const sel=q('pw-meet-link'); if(!sel || !window.S) return; sel.innerHTML='<option value="">연결 안 함</option>'+(S.lightnings||[]).map(l=>`<option value="${l.id}">${l.region||'본사'} · ${escapeHtml(l.title)}</option>`).join(''); };
   function patchFunctions(){
@@ -2810,13 +2833,13 @@ renderVisitors();
     window.addEvent=function(){ const name=q('ev-name').value.trim(), date=q('ev-date').value.trim(); if(!name||!date)return; const type=q('ev-type')?.value||'official', privacy=q('ev-privacy')?.value||'public'; const color={official:'#2D6A4F',trip:'#3B82F6',edu:'#F4A261'}[type]||'#2D6A4F'; S.events.push({id:'e'+Date.now(),name,date,desc:q('ev-desc').value.trim(),type,privacy,color}); closeSheet('ev-sheet'); ['ev-name','ev-date','ev-desc'].forEach(id=>{ if(q(id)) q(id).value=''; }); renderCal(); renderHome(); saveState(); };
     window.submitPoll=function(){ const question=q('pw-question').value.trim(); if(!question)return; const opts=[...q('pw-options').querySelectorAll('input')].map(i=>i.value.trim()).filter(Boolean); if(opts.length<2){alert('선택지를 2개 이상 입력해주세요.');return;} const link=q('pw-meet-link')?.value||null; const newPoll={id:S.nextId++,question,options:opts.map(text=>({text,votes:0})),myVote:null,deadline:q('pw-deadline').value||null,author:'나',tag:link?'번개 연계':'투표',linkedMeetId:link}; S.polls.unshift(newPoll); closeSheet('poll-write-sheet'); q('pw-question').value=''; q('pw-deadline').value=''; if(q('pw-meet-link')) q('pw-meet-link').value=''; q('pw-options').innerHTML='<input class="form-input" placeholder="선택지 1" data-opt="0"/><input class="form-input" placeholder="선택지 2" data-opt="1"/>'; window.pollOptCount=2; renderPolls(); saveState(); pushNotif({icon:'📊', iconClass:'notif-ni-poll', text:`새 투표가 열렸어요 — <strong>${escapeHtml(question.slice(0,25))}</strong>`, type:'poll', targetId:newPoll.id}); };
     window.pollHtml=function(p){ const total=p.options.reduce((s,o)=>s+o.votes,0), voted=p.myVote!==null, meet=(S.lightnings||[]).find(l=>String(l.id)===String(p.linkedMeetId)), top=p.options.slice().sort((a,b)=>b.votes-a.votes)[0]; return `<div class="poll-card"><div class="poll-header"><div style="display:flex;align-items:center;gap:6px;margin-bottom:6px"><span class="poll-tag">${p.tag||'투표'}</span>${p.deadline?`<span style="font-size:10px;color:var(--t3)">~${p.deadline}</span>`:''}${meet?`<span class="poll-tag">⚡ ${escapeHtml(meet.title)}</span>`:''}</div><div class="poll-question">${escapeHtml(p.question)}</div><div class="poll-meta">${escapeHtml(p.author||'나')}${meet?` · ${meet.region||'본사'} 번개와 연결됨`:''}</div></div><div class="poll-options">${p.options.map((o,i)=>{ const pct=total>0?Math.round(o.votes/total*100):0, mine=p.myVote===i; return `<div class="poll-option ${mine?'voted':''}" onclick="vote(${p.id},${i})"><div class="poll-bar" style="width:${voted?pct:0}%"></div><div class="poll-option-inner"><span class="poll-option-text">${mine?'✓ ':''} ${escapeHtml(o.text)}</span>${voted?`<span class="poll-option-pct">${pct}%</span>`:''}</div></div>`; }).join('')}</div><div class="poll-footer"><span class="poll-total">총 ${total}명 참여${voted&&top?' · 현재 1위: '+escapeHtml(top.text):''}</span>${voted?`<button onclick="unvote(${p.id})" style="font-size:10px;background:none;border:none;color:var(--t3);cursor:pointer">투표 취소</button>`:''}</div></div>`; };
-    window.submitClub=function(){ const title=q('cw-title').value.trim(); if(!title)return; const item={id:S.nextId++,emoji:window.curClubEmoji||'⚡',title,desc:q('cw-desc').value.trim(),time:q('cw-time').value||'미정',maxMember:Number(q('cw-max').value)||10,members:[],joined:false,author:'나',region:q('cw-region')?.value||'본사',chatMessages:[],type:window.curClubType||'lightning'}; S.lightnings.unshift(item); closeSheet('club-write-sheet'); ['cw-title','cw-desc','cw-time','cw-max'].forEach(id=>q(id).value=''); saveState(); renderLightnings(); pushNotif({icon:'⚡', iconClass:'notif-ni-club', text:`새 번개 모임이 생겼어요 — <strong>${escapeHtml(title)}</strong>`, type:'club', targetId:item.id}); };
+    window.submitClub=function(){ const title=q('cw-title').value.trim(); if(!title)return; const desc=q('cw-desc').value.trim(), time=q('cw-time').value.trim(), type=window.curClubType||'lightning'; const check=recordRuleFilter(`${type==='club'?'소모임':'번개'}: ${title}`,`${desc}\n${time}`); if(!check.pass){ const msg=q('club-filter-message'); if(msg)msg.innerHTML=`<div class="check-box check-fail">차단됨: ${escapeHtml(check.reason)}</div>`; showToast('🛡','번개·소모임 등록 차단',check.reason); return; } const msg=q('club-filter-message'); if(msg)msg.innerHTML=''; const item={id:S.nextId++,emoji:window.curClubEmoji||'⚡',title,desc,time:time||'미정',maxMember:Number(q('cw-max').value)||10,members:[],joined:false,author:'나',region:q('cw-region')?.value||'본사',chatMessages:[],type}; S.lightnings.unshift(item); closeSheet('club-write-sheet'); ['cw-title','cw-desc','cw-time','cw-max'].forEach(id=>q(id).value=''); saveState(); renderLightnings(); pushNotif({icon:'⚡', iconClass:'notif-ni-club', text:`새 번개 모임이 생겼어요 — <strong>${escapeHtml(title)}</strong>`, type:'club', targetId:item.id}); };
     window.renderLightnings=function(){ const el=q('lightning-list'); const list=(S.lightnings||[]).filter(l=>W2.region==='all'||l.region===W2.region); if(!list.length){el.innerHTML='<div class="empty"><div class="empty-icon">⚡</div>조건에 맞는 번개가 없어요. 먼저 제안해보세요!</div>';return;} el.innerHTML=list.map(l=>`<div class="lightning-card"><div class="lightning-top"><span style="font-size:20px">${l.emoji||'⚡'}</span><span class="lightning-badge">${l.type==='club'?'소모임':'번개'}</span><span class="week2-chip">${l.region||'본사'}</span><span style="font-size:11px;color:rgba(255,255,255,.6);margin-left:auto">${l.author||'작성자'}</span></div><div class="lightning-title">${escapeHtml(l.title)}</div><div class="lightning-desc">${escapeHtml(l.desc||'')}</div><div class="lightning-meta"><span class="lightning-time">🕐 ${escapeHtml(l.time||'미정')}</span><span class="lightning-count">👥 ${(l.members||[]).length+1}/${l.maxMember||10}명</span><button class="lightning-join ${l.joined?'joined':''}" onclick="event.stopPropagation();joinLightning(${l.id})">${l.joined?'참가중 ✓':'참가하기'}</button></div><div class="week2-lightning-actions"><button class="week2-chat-btn" onclick="week2OpenChat(${l.id})">톡방 입장</button><button class="week2-settle-btn" onclick="week2Settle(${l.id})">정산 완료·삭제</button></div></div>`).join(''); };
     const oldJoin=window.joinLightning; window.joinLightning=function(id){ oldJoin.call(this,id); saveState(); renderLightnings(); };
   }
   window.week2OpenChat=function(id){ const l=S.lightnings.find(x=>x.id===id); if(!l)return; W2.chatId=id; q('week2-chat-title').textContent=`${l.emoji||'⚡'} ${l.title}`; q('week2-chat-members').textContent=`참여자: ${[l.author||'작성자',...(l.members||[])].join(', ')} · 정산 완료 시 톡방은 자동 삭제됩니다.`; window.week2RenderChat(); openSheet('week2-club-chat-sheet'); };
   window.week2RenderChat=function(){ const l=S.lightnings.find(x=>x.id===W2.chatId); if(!l)return; if(!Array.isArray(l.chatMessages))l.chatMessages=[]; q('week2-chat-body').innerHTML=l.chatMessages.length?l.chatMessages.map(m=>`<div class="week2-msg ${m.me?'me':''}"><div class="who">${escapeHtml(m.who)} · ${m.time}</div>${escapeHtml(m.text)}</div>`).join(''):'<div class="empty" style="padding:12px">아직 메시지가 없어요</div>'; };
-  window.week2SendChat=function(){ const input=q('week2-chat-input'), text=input.value.trim(); if(!text)return; const l=S.lightnings.find(x=>x.id===W2.chatId); if(!l)return; if(!Array.isArray(l.chatMessages))l.chatMessages=[]; l.chatMessages.push({who:'나',text,me:true,time:new Date().toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'})}); input.value=''; saveState(); window.week2RenderChat(); };
+  window.week2SendChat=function(){ const input=q('week2-chat-input'), text=input.value.trim(); if(!text)return; const check=recordRuleFilter('번개 톡방 메시지',text); if(!check.pass){ const msg=q('week2-chat-filter-message'); if(msg)msg.innerHTML=`<div class="check-box check-fail">차단됨: ${escapeHtml(check.reason)}</div>`; showToast('🛡','톡방 메시지 차단',check.reason); return; } const msg=q('week2-chat-filter-message'); if(msg)msg.innerHTML=''; const l=S.lightnings.find(x=>x.id===W2.chatId); if(!l)return; if(!Array.isArray(l.chatMessages))l.chatMessages=[]; l.chatMessages.push({who:'나',text,me:true,time:new Date().toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'})}); input.value=''; saveState(); window.week2RenderChat(); };
   window.week2Settle=function(id){ if(!confirm('정산이 끝난 톡방과 모집글을 삭제할까요?'))return; S.lightnings=S.lightnings.filter(x=>x.id!==id); saveState(); renderLightnings(); closeSheet('week2-club-chat-sheet'); showToast('🧾','정산 완료','모임 톡방이 삭제됐어요.'); };
   document.addEventListener('DOMContentLoaded', function(){ normalizeWeek2(); syncBoardControls(); ensureSearch(); ensureRegionFilter(); ensureFormFields(); ensureChatSheet(); patchFunctions(); if(q('feed-list')) renderFeed(); });
 })();
@@ -3784,6 +3807,145 @@ if (document.readyState === 'loading') {
   init();
 }
 
+})();
+</script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script id="cop-supabase-sync-script">
+(function(){
+  const CONFIG_KEY='cop-supabase-config-v1';
+  let client=null, channel=null, remoteLoading=false, saveTimer=null, currentUserId=null;
+
+  function q(id){return document.getElementById(id)}
+  function setStatus(message,type='loading'){
+    const el=q('sb-status'); if(!el)return;
+    el.style.display='block';
+    el.className=`check-box ${type==='ok'?'check-ok':type==='fail'?'check-fail':'check-loading'}`;
+    el.textContent=message;
+  }
+  function readConfig(){
+    try{return JSON.parse(localStorage.getItem(CONFIG_KEY)||'null')}catch(e){return null}
+  }
+  function decodeJwtRole(key){
+    try{
+      const part=String(key).split('.')[1]; if(!part)return '';
+      const normalized=part.replace(/-/g,'+').replace(/_/g,'/');
+      return JSON.parse(atob(normalized)).role||'';
+    }catch(e){return ''}
+  }
+  function validateConfig(url,key){
+    let parsed; try{parsed=new URL(url)}catch(e){throw new Error('Project URL 형식이 올바르지 않습니다.')}
+    if(parsed.protocol!=='https:')throw new Error('Project URL은 https:// 주소여야 합니다.');
+    if(!key||key.length<20)throw new Error('Publishable key 또는 anon key를 입력해 주세요.');
+    if(key.startsWith('sb_secret_')||decodeJwtRole(key)==='service_role')throw new Error('service_role/secret 키는 브라우저에 사용할 수 없습니다. publishable 또는 anon 키를 넣어 주세요.');
+    return {url:parsed.origin,key:key.trim()};
+  }
+  async function ensureClient(){
+    const config=readConfig();
+    if(!config)throw new Error('먼저 Project URL과 key를 저장해 주세요.');
+    if(!window.supabase?.createClient)throw new Error('Supabase 라이브러리를 불러오지 못했습니다. 인터넷 연결을 확인해 주세요.');
+    if(!client){
+      client=window.supabase.createClient(config.url,config.key,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:false}});
+      window.copSupabaseClient=client;
+    }
+    let {data:{session}}=await client.auth.getSession();
+    if(!session){
+      const result=await client.auth.signInAnonymously();
+      if(result.error)throw new Error(`익명 로그인을 사용할 수 없습니다. Supabase Auth에서 Anonymous Sign-Ins를 켜 주세요. (${result.error.message})`);
+      session=result.data.session;
+    }
+    currentUserId=session?.user?.id||null;
+    subscribeRealtime();
+    return client;
+  }
+  function sharedStatePayload(){
+    const state=JSON.parse(JSON.stringify(window.S||{}));
+    delete state.chatHistory;
+    state.isChecking=false; state.checkPassed=false;
+    return state;
+  }
+  function refreshUi(){
+    if(typeof normalizeComments==='function')normalizeComments();
+    ['renderHome','renderFeed','renderLightnings','renderCal','renderFilterLog','renderNotifBadge'].forEach(name=>{try{if(typeof window[name]==='function')window[name]()}catch(e){}});
+  }
+  function applyRemoteState(state){
+    if(!state||typeof state!=='object'||!Array.isArray(state.posts))return;
+    const privateChat=Array.isArray(S.chatHistory)?S.chatHistory:[];
+    remoteLoading=true;
+    Object.assign(S,state);
+    S.chatHistory=privateChat;
+    try{localStorage.setItem(STORAGE_KEY,JSON.stringify(S))}catch(e){}
+    refreshUi();
+    remoteLoading=false;
+  }
+  function subscribeRealtime(){
+    if(!client||channel)return;
+    channel=client.channel('cop-app-state-shared')
+      .on('postgres_changes',{event:'UPDATE',schema:'public',table:'cop_app_state',filter:'id=eq.shared'},payload=>{
+        if(payload.new?.updated_by&&payload.new.updated_by===currentUserId)return;
+        applyRemoteState(payload.new?.state);
+        setStatus('다른 사용자의 변경사항을 반영했습니다.','ok');
+      }).subscribe();
+  }
+  async function saveRemote(showMessage=false){
+    if(remoteLoading)return false;
+    try{
+      const sb=await ensureClient();
+      const {error}=await sb.from('cop_app_state').upsert({id:'shared',state:sharedStatePayload(),updated_by:currentUserId},{onConflict:'id'});
+      if(error)throw error;
+      if(showMessage)setStatus('현재 데이터를 Supabase에 저장했습니다.','ok');
+      return true;
+    }catch(error){if(showMessage)setStatus(error.message||'저장에 실패했습니다.','fail');return false}
+  }
+  function scheduleRemoteSave(){
+    if(remoteLoading||!readConfig())return;
+    clearTimeout(saveTimer);
+    saveTimer=setTimeout(()=>saveRemote(false),900);
+  }
+
+  window.saveSupabaseConfig=async function(){
+    try{
+      const config=validateConfig(q('sb-project-url')?.value.trim(),q('sb-anon-key')?.value.trim());
+      localStorage.setItem(CONFIG_KEY,JSON.stringify(config));
+      if(channel&&client){try{await client.removeChannel(channel)}catch(e){}}
+      client=null; channel=null; currentUserId=null;
+      setStatus('설정을 저장했습니다. 연결 확인 중...');
+      await window.testSupabaseConnection();
+    }catch(error){setStatus(error.message,'fail')}
+  };
+  window.testSupabaseConnection=async function(){
+    try{
+      const sb=await ensureClient();
+      const {error}=await sb.from('cop_app_state').select('id,updated_at').limit(1);
+      if(error)throw error;
+      setStatus('Supabase 연결 성공','ok'); return true;
+    }catch(error){setStatus(error.message||'연결에 실패했습니다.','fail');return false}
+  };
+  window.loadSupabaseState=async function(){
+    try{
+      setStatus('공유 데이터를 불러오는 중...');
+      const sb=await ensureClient();
+      const {data,error}=await sb.from('cop_app_state').select('state,updated_at').eq('id','shared').maybeSingle();
+      if(error)throw error;
+      if(!data){await saveRemote(false);setStatus('첫 공유 데이터를 생성했습니다.','ok');return}
+      applyRemoteState(data.state);
+      setStatus(`공유 데이터를 불러왔습니다. (${new Date(data.updated_at).toLocaleString('ko-KR')})`,'ok');
+    }catch(error){setStatus(error.message||'불러오기에 실패했습니다.','fail')}
+  };
+  window.saveSupabaseState=()=>saveRemote(true);
+
+  const originalSaveState=window.saveState;
+  window.saveState=function(){
+    if(typeof originalSaveState==='function')originalSaveState.apply(this,arguments);
+    scheduleRemoteSave();
+  };
+
+  document.addEventListener('DOMContentLoaded',async function(){
+    const config=readConfig(); if(!config)return;
+    if(q('sb-project-url'))q('sb-project-url').value=config.url||'';
+    if(q('sb-anon-key'))q('sb-anon-key').value=config.key||'';
+    setStatus('저장된 Supabase 설정으로 연결 중...');
+    if(await window.testSupabaseConnection())await window.loadSupabaseState();
+  });
 })();
 </script>
 </body>
